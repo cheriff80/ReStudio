@@ -20,6 +20,7 @@ import {
 
 import { generatePDF } from "./components/pdfGenerator";
 import { paginateDocument, type PaginationPage } from "./components/documentPagination";
+import MenuBar from "./components/MenuBar";
 
 type TextBlock = {
   id: number;
@@ -106,6 +107,9 @@ export default function Home() {
 
   const [previewPages, setPreviewPages] =
     useState<PaginationPage[]>([]);
+
+  const [activeConceptId, setActiveConceptId] =
+    useState<number | null>(null);
 
   const fileInputRefs = useRef<
     Record<
@@ -1363,6 +1367,103 @@ export default function Home() {
   }
 
   // ---------------------------------------------
+  // ACCIONES DEL MENÚ
+  // ---------------------------------------------
+
+  function handleNewDocument() {
+    const hasContent =
+      title.trim() !== "" ||
+      concepts.some(
+        (concept) =>
+          concept.title.trim() !== "" ||
+          concept.content.some(
+            (block) =>
+              block.type === "image" ||
+              block.content.replace(/<[^>]*>/g, "").trim() !== ""
+          )
+      );
+
+    if (
+      hasContent &&
+      !window.confirm(
+        "¿Crear un documento nuevo? Se perderán los cambios del documento actual."
+      )
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+
+    setTitle("");
+    setConcepts([
+      {
+        id: now,
+        title: "",
+        level: 0,
+        content: [
+          {
+            id: now + 1,
+            type: "text",
+            content: "",
+          },
+        ],
+      },
+    ]);
+    setCollapsedConcepts(new Set());
+    setActiveConceptId(null);
+    setIsPreview(false);
+  }
+
+  function handleUndo() {
+    document.execCommand("undo");
+  }
+
+  function handleRedo() {
+    document.execCommand("redo");
+  }
+
+  function handleCut() {
+    document.execCommand("cut");
+  }
+
+  function handleCopy() {
+    document.execCommand("copy");
+  }
+
+  async function handlePaste() {
+    try {
+      const clipboardText =
+        await navigator.clipboard.readText();
+
+      document.execCommand(
+        "insertText",
+        false,
+        clipboardText
+      );
+    } catch {
+      document.execCommand("paste");
+    }
+  }
+
+  function handleExpandAll() {
+    setCollapsedConcepts(new Set());
+  }
+
+  function handleCollapseAll() {
+    setCollapsedConcepts(
+      new Set(concepts.map((concept) => concept.id))
+    );
+  }
+
+  function handleEditMode() {
+    setIsPreview(false);
+  }
+
+  function handlePreview() {
+    setIsPreview(true);
+  }
+
+  // ---------------------------------------------
   // PAGINACIÓN DE LA VISTA PREVIA
   // ---------------------------------------------
 
@@ -1374,14 +1475,6 @@ export default function Home() {
   // ---------------------------------------------
   // PAGINACIÓN DE LA VISTA PREVIA
   // ---------------------------------------------
-
-  useEffect(() => {
-    if (!isPreview) return;
-
-    setPreviewPages(
-      paginateDocument(concepts)
-    );
-  }, [isPreview, concepts]);
 
   // ---------------------------------------------
   // CARGANDO
@@ -1414,6 +1507,22 @@ export default function Home() {
   if (isPreview) {
     return (
       <main className="min-h-screen bg-slate-300 text-slate-800">
+        <MenuBar
+          onNew={handleNewDocument}
+          onOpen={openRTD}
+          onSave={exportRTD}
+          onSaveAs={exportRTD}
+          onExportPdf={handleGeneratePDF}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          onCut={handleCut}
+          onCopy={handleCopy}
+          onPaste={handlePaste}
+          onEditMode={handleEditMode}
+          onPreview={handlePreview}
+          onExpandAll={handleExpandAll}
+          onCollapseAll={handleCollapseAll}
+        />
 
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
 
@@ -1442,22 +1551,6 @@ export default function Home() {
                 className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
               >
                 ← Volver al editor
-              </button>
-
-
-              <button
-                type="button"
-                onClick={
-                  handleGeneratePDF
-                }
-                disabled={
-                  isGeneratingPDF
-                }
-                className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isGeneratingPDF
-                  ? "Generando..."
-                  : "📄 Generar PDF"}
               </button>
 
             </div>
@@ -1679,6 +1772,22 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-800">
+      <MenuBar
+          onNew={handleNewDocument}
+          onOpen={openRTD}
+          onSave={exportRTD}
+          onSaveAs={exportRTD}
+          onExportPdf={handleGeneratePDF}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          onCut={handleCut}
+          onCopy={handleCopy}
+          onPaste={handlePaste}
+          onEditMode={handleEditMode}
+          onPreview={handlePreview}
+          onExpandAll={handleExpandAll}
+          onCollapseAll={handleCollapseAll}
+        />
 
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
 
@@ -1719,51 +1828,7 @@ export default function Home() {
           </div>
 
 
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={openRTD}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              📂 Abrir RTD
-            </button>
-
-            <button
-              type="button"
-              onClick={exportRTD}
-              className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700"
-            >
-              💾 Guardar RTD
-            </button>
-
-
-            <button
-              type="button"
-              onClick={() =>
-                setIsPreview(true)
-              }
-              className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
-            >
-              👁️ Vista previa
-            </button>
-
-
-            <button
-              type="button"
-              onClick={
-                handleGeneratePDF
-              }
-              disabled={
-                isGeneratingPDF
-              }
-              className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isGeneratingPDF
-                ? "Generando PDF..."
-                : "Generar PDF"}
-            </button>
-
-          </div>
+          
 
         </div>
 
