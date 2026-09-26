@@ -13,13 +13,19 @@ export type PaginationImageBlock = {
   width?: number;
 };
 
-export type PaginationBlock = PaginationTextBlock | PaginationImageBlock;
+export type PaginationPageBreakBlock = {
+  id: number;
+  type: "pageBreak";
+};
+
+export type PaginationBlock = PaginationTextBlock | PaginationImageBlock | PaginationPageBreakBlock;
 
 export type PaginationConcept = {
   id: number;
   title: string;
   level: number;
   content: PaginationBlock[];
+  showTitle?: boolean;
 };
 
 export type PaginationPage = {
@@ -51,6 +57,8 @@ function estimateTextHeight(html: string): number {
 }
 
 function estimateBlockHeight(block: PaginationBlock): number {
+  if (block.type === "pageBreak") return 0;
+
   if (block.type === "image") {
     const width = Math.max(25, Math.min(100, block.width ?? 75));
     return 280 * (width / 75) + BLOCK_SPACING;
@@ -83,48 +91,84 @@ export function paginateDocument(
     height = 0;
   };
 
+  const pushFragment = (
+    concept: PaginationConcept,
+    content: PaginationBlock[],
+    showTitle: boolean
+  ) => {
+    if (!content.length) return;
+
+    current.push({
+      ...concept,
+      content,
+      showTitle,
+    });
+
+    height +=
+      (showTitle ? TITLE_HEIGHT : 0) +
+      content.reduce(
+        (sum, block) => sum + estimateBlockHeight(block),
+        0
+      ) +
+      CONCEPT_SPACING;
+  };
+
   for (const concept of concepts) {
-    const full = estimateConceptHeight(concept);
+    let fragment: PaginationBlock[] = [];
+    let showTitle = true;
+    let fragmentHeight = TITLE_HEIGHT;
+    let hasRenderedContent = false;
 
-    if (height + full <= PAGE_HEIGHT) {
-      current.push(concept);
-      height += full;
-      continue;
-    }
-
-    if (current.length) newPage();
-
-    if (full <= PAGE_HEIGHT) {
-      current.push(concept);
-      height = full;
-      continue;
-    }
-
-    let partial: PaginationConcept = { ...concept, content: [] };
-    let partialHeight = TITLE_HEIGHT;
+    const flushFragment = () => {
+      if (!fragment.length) return;
+      pushFragment(concept, fragment, showTitle);
+      fragment = [];
+      fragmentHeight = 0;
+      showTitle = false;
+    };
 
     for (const block of concept.content) {
+      if (block.type === "pageBreak") {
+        // Un salto al principio de un concepto no debe separar
+        // el título de su primer contenido. Los saltos útiles
+        // son los que aparecen entre bloques de contenido.
+        if (!hasRenderedContent && fragment.length === 0) {
+          continue;
+        }
+
+        flushFragment();
+        newPage();
+
+        showTitle = false;
+        fragmentHeight = 0;
+        continue;
+      }
+
       const blockHeight = estimateBlockHeight(block);
 
       if (
-        partial.content.length > 0 &&
-        partialHeight + blockHeight > PAGE_HEIGHT
+        fragment.length > 0 &&
+        fragmentHeight + blockHeight > PAGE_HEIGHT
       ) {
-        current.push(partial);
-        height += partialHeight + CONCEPT_SPACING;
+        flushFragment();
         newPage();
-        partial = { ...concept, content: [] };
-        partialHeight = TITLE_HEIGHT;
+        showTitle = false;
+        fragmentHeight = 0;
       }
 
-      partial.content.push(block);
-      partialHeight += blockHeight;
+      fragment.push(block);
+      fragmentHeight += blockHeight;
+      hasRenderedContent = true;
+
+      if (fragment.length === 1 && fragmentHeight > PAGE_HEIGHT) {
+        flushFragment();
+        newPage();
+        showTitle = false;
+        fragmentHeight = 0;
+      }
     }
 
-    if (partial.content.length) {
-      current.push(partial);
-      height += partialHeight + CONCEPT_SPACING;
-    }
+    flushFragment();
   }
 
   newPage();

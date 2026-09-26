@@ -17,7 +17,9 @@ export default function RichTextEditor({
 }: RichTextEditorProps) {
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        orderedList: false,
+      }),
       TextStyle,
       Color.configure({ types: ["textStyle"] }),
       Underline,
@@ -79,10 +81,7 @@ export default function RichTextEditor({
           className={`rounded-lg px-3 py-1.5 text-sm ${editor.isActive("bulletList") ? "bg-indigo-100 text-indigo-700" : "text-slate-600 hover:bg-slate-200"}`}>
           • Lista
         </button>
-        <button type="button" onClick={() => editor.chain().focus().toggleOrderedList().run()}
-          className={`rounded-lg px-3 py-1.5 text-sm ${editor.isActive("orderedList") ? "bg-indigo-100 text-indigo-700" : "text-slate-600 hover:bg-slate-200"}`}>
-          1. Lista
-        </button>
+
       </div>
 
       <EditorContent
@@ -92,3 +91,4 @@ export default function RichTextEditor({
     </div>
   );
 }
+

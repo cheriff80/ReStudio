@@ -37,14 +37,22 @@ type ImageBlock = {
   width?: number;
 };
 
+type PageBreakBlock = {
+  id: number;
+  type: "pageBreak";
+};
+
 type ContentBlock =
   | TextBlock
-  | ImageBlock;
+  | ImageBlock
+  | PageBreakBlock;
 
 type RTDFile = {
   format: "rtd";
   version: 1;
   title: string;
+  author: string;
+  subject: string;
   concepts: Concept[];
 };
 
@@ -57,6 +65,8 @@ type Concept = {
 
 type SavedDocument = {
   title: string;
+  author?: string;
+  subject?: string;
   concepts: Concept[];
 };
 
@@ -80,6 +90,12 @@ const INITIAL_CONCEPTS: Concept[] = [
 
 export default function Home() {
   const [title, setTitle] =
+    useState("");
+
+  const [author, setAuthor] =
+    useState("");
+
+  const [subject, setSubject] =
     useState("");
 
   const [concepts, setConcepts] =
@@ -107,9 +123,6 @@ export default function Home() {
 
   const [previewPages, setPreviewPages] =
     useState<PaginationPage[]>([]);
-
-  const [activeConceptId, setActiveConceptId] =
-    useState<number | null>(null);
 
   const fileInputRefs = useRef<
     Record<
@@ -154,6 +167,20 @@ export default function Home() {
           "string"
         ) {
           setTitle(parsed.title);
+        }
+
+        if (
+          typeof parsed.author ===
+          "string"
+        ) {
+          setAuthor(parsed.author);
+        }
+
+        if (
+          typeof parsed.subject ===
+          "string"
+        ) {
+          setSubject(parsed.subject);
         }
 
         if (
@@ -268,6 +295,8 @@ export default function Home() {
           const documentData: SavedDocument =
             {
               title,
+              author,
+              subject,
 
               concepts:
                 concepts.map(
@@ -332,6 +361,8 @@ export default function Home() {
     };
   }, [
     title,
+    author,
+    subject,
     concepts,
     isLoaded,
   ]);
@@ -352,6 +383,8 @@ export default function Home() {
 
       await generatePDF(
         title,
+        author,
+        subject,
         concepts
       );
     } catch (error) {
@@ -772,6 +805,29 @@ export default function Home() {
   }
 
   // ---------------------------------------------
+  // AÑADIR SALTO DE PÁGINA
+  // ---------------------------------------------
+
+  function addPageBreakBlock(conceptId: number) {
+    setConcepts((current) =>
+      current.map((concept) => {
+        if (concept.id !== conceptId) return concept;
+
+        return {
+          ...concept,
+          content: [
+            ...concept.content,
+            {
+              id: Date.now() + Math.random(),
+              type: "pageBreak",
+            },
+          ],
+        };
+      })
+    );
+  }
+
+  // ---------------------------------------------
   // AÑADIR IMAGEN
   // ---------------------------------------------
 
@@ -1091,6 +1147,8 @@ export default function Home() {
       format: "rtd",
       version: 1,
       title,
+      author,
+      subject,
       concepts,
     };
 
@@ -1338,6 +1396,18 @@ export default function Home() {
           : ""
       );
 
+      setAuthor(
+        typeof parsed.author === "string"
+          ? parsed.author
+          : ""
+      );
+
+      setSubject(
+        typeof parsed.subject === "string"
+          ? parsed.subject
+          : ""
+      );
+
       setConcepts(
         parsed.concepts as Concept[]
       );
@@ -1373,13 +1443,17 @@ export default function Home() {
   function handleNewDocument() {
     const hasContent =
       title.trim() !== "" ||
+      author.trim() !== "" ||
+      subject.trim() !== "" ||
       concepts.some(
         (concept) =>
           concept.title.trim() !== "" ||
           concept.content.some(
             (block) =>
               block.type === "image" ||
-              block.content.replace(/<[^>]*>/g, "").trim() !== ""
+              block.type === "pageBreak" ||
+              (block.type === "text" &&
+                block.content.replace(/<[^>]*>/g, "").trim() !== "")
           )
       );
 
@@ -1395,6 +1469,8 @@ export default function Home() {
     const now = Date.now();
 
     setTitle("");
+    setAuthor("");
+    setSubject("");
     setConcepts([
       {
         id: now,
@@ -1410,7 +1486,6 @@ export default function Home() {
       },
     ]);
     setCollapsedConcepts(new Set());
-    setActiveConceptId(null);
     setIsPreview(false);
   }
 
@@ -1507,57 +1582,25 @@ export default function Home() {
   if (isPreview) {
     return (
       <main className="min-h-screen bg-slate-300 text-slate-800">
-        <MenuBar
-          onNew={handleNewDocument}
-          onOpen={openRTD}
-          onSave={exportRTD}
-          onSaveAs={exportRTD}
-          onExportPdf={handleGeneratePDF}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          onCut={handleCut}
-          onCopy={handleCopy}
-          onPaste={handlePaste}
-          onEditMode={handleEditMode}
-          onPreview={handlePreview}
-          onExpandAll={handleExpandAll}
-          onCollapseAll={handleCollapseAll}
-        />
+        <div className="sticky top-0 z-50">
+          <MenuBar
+            onNew={handleNewDocument}
+            onOpen={openRTD}
+            onSave={exportRTD}
+            onSaveAs={exportRTD}
+            onExportPdf={handleGeneratePDF}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            onCut={handleCut}
+            onCopy={handleCopy}
+            onPaste={handlePaste}
+            onEditMode={handleEditMode}
+            onPreview={handlePreview}
+            onExpandAll={handleExpandAll}
+            onCollapseAll={handleCollapseAll}
+          />
+        </div>
 
-        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
-
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-
-            <div>
-
-              <h1 className="text-2xl font-bold text-slate-800">
-                ReStudio
-              </h1>
-
-              <p className="text-sm text-slate-500">
-                Vista previa del documento
-              </p>
-
-            </div>
-
-
-            <div className="flex gap-2">
-
-              <button
-                type="button"
-                onClick={() =>
-                  setIsPreview(false)
-                }
-                className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                ← Volver al editor
-              </button>
-
-            </div>
-
-          </div>
-
-        </header>
 
 
         {/* CONTENEDOR DE HOJAS */}
@@ -1585,13 +1628,24 @@ export default function Home() {
                     boxSizing: "border-box",
                   }}
                 >
-                  {pageIndex === 0 && (
-                    <header className="mb-8 border-b-2 border-slate-200 pb-5">
-                      <h1 className="text-4xl font-bold leading-tight text-slate-900">
-                        {title || "Mis apuntes"}
-                      </h1>
-                    </header>
-                  )}
+                  <header className="mb-8 border-b-2 border-slate-200 pb-4">
+                    <div className="flex items-start justify-between gap-6">
+                      {pageIndex === 0 ? (
+                        <h1 className="text-4xl font-bold leading-tight text-slate-900">
+                          {title || "Mis apuntes"}
+                        </h1>
+                      ) : (
+                        <div />
+                      )}
+
+                      {(author.trim() || subject.trim()) && (
+                        <div className="shrink-0 text-right text-xs leading-5 text-slate-500">
+                          {author.trim() && <div>{author}</div>}
+                          {subject.trim() && <div>{subject}</div>}
+                        </div>
+                      )}
+                    </div>
+                  </header>
 
                   <div className="space-y-7">
                     {previewPage.concepts.map((concept) => {
@@ -1611,25 +1665,27 @@ export default function Home() {
                             marginLeft: `${indentation}px`,
                           }}
                         >
-                          <h2
-                            className="mb-3 font-semibold leading-tight text-slate-900"
-                            style={{
-                              fontSize: `${Math.max(
-                                22 - concept.level * 2,
-                                15
-                              )}px`,
-                            }}
-                          >
-                            <span className="font-bold text-indigo-600">
-                              {originalIndex >= 0
-                                ? getNumber(originalIndex)
-                                : ""}
-                              {" "}
-                            </span>
-                            <span>
-                              {concept.title || "Sin título"}
-                            </span>
-                          </h2>
+                          {concept.showTitle !== false && (
+                            <h2
+                              className="mb-3 font-semibold leading-tight text-slate-900"
+                              style={{
+                                fontSize: `${Math.max(
+                                  22 - concept.level * 2,
+                                  15
+                                )}px`,
+                              }}
+                            >
+                              <span className="font-bold text-indigo-600">
+                                {originalIndex >= 0
+                                  ? getNumber(originalIndex)
+                                  : ""}
+                                {" "}
+                              </span>
+                              <span>
+                                {concept.title || "Sin título"}
+                              </span>
+                            </h2>
+                          )}
 
                           <div className="space-y-5">
                             {concept.content.map((block) => {
@@ -1645,29 +1701,33 @@ export default function Home() {
                                 );
                               }
 
-                              return (
-                                <figure
-                                  key={block.id}
-                                  className="my-5 flex justify-center"
-                                >
-                                  {block.url ? (
-                                    <img
-                                      src={block.url}
-                                      alt={block.name}
-                                      style={{
-                                        width: `${block.width ?? 75}%`,
-                                        maxWidth: "100%",
-                                        maxHeight: "245mm",
-                                        objectFit: "contain",
-                                      }}
-                                    />
-                                  ) : (
-                                    <div className="flex h-32 w-full items-center justify-center rounded-lg bg-slate-100 text-sm text-slate-400">
-                                      Cargando imagen...
-                                    </div>
-                                  )}
-                                </figure>
-                              );
+                              if (block.type === "image") {
+                                return (
+                                  <figure
+                                    key={block.id}
+                                    className="my-5 flex justify-center"
+                                  >
+                                    {block.url ? (
+                                      <img
+                                        src={block.url}
+                                        alt={block.name}
+                                        style={{
+                                          width: `${block.width ?? 75}%`,
+                                          maxWidth: "100%",
+                                          maxHeight: "245mm",
+                                          objectFit: "contain",
+                                        }}
+                                      />
+                                    ) : (
+                                      <div className="flex h-32 w-full items-center justify-center rounded-lg bg-slate-100 text-sm text-slate-400">
+                                        Cargando imagen...
+                                      </div>
+                                    )}
+                                  </figure>
+                                );
+                              }
+
+                              return null;
                             })}
                           </div>
                         </section>
@@ -1772,7 +1832,8 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-800">
-      <MenuBar
+      <div className="sticky top-0 z-50">
+        <MenuBar
           onNew={handleNewDocument}
           onOpen={openRTD}
           onSave={exportRTD}
@@ -1788,72 +1849,47 @@ export default function Home() {
           onExpandAll={handleExpandAll}
           onCollapseAll={handleCollapseAll}
         />
+      </div>
 
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
-
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-
-          <div>
-
-            <h1 className="text-2xl font-bold tracking-tight text-slate-800">
-              ReStudio
-            </h1>
-
-            <div className="mt-1 flex items-center gap-2 text-sm">
-
-              <span className="text-slate-500">
-                Crea, organiza y estudia tus apuntes
-              </span>
-
-              <span className="text-slate-300">
-                •
-              </span>
-
-              {isSaving ? (
-                <span className="text-amber-600">
-                  Guardando...
-                </span>
-              ) : lastSaved ? (
-                <span className="text-emerald-600">
-                  ✓ Guardado
-                </span>
-              ) : (
-                <span className="text-slate-400">
-                  Guardado local
-                </span>
-              )}
-
-            </div>
-
-          </div>
-
-
-          
-
-        </div>
-
-      </header>
 
 
       <div className="mx-auto max-w-6xl px-6 py-10">
 
         <div className="mb-10">
+          <div className="grid gap-6 md:grid-cols-[1fr_280px] md:items-end">
+            <div>
+              <input
+                value={title}
+                onChange={(event) =>
+                  setTitle(event.target.value)
+                }
+                placeholder="Título del esquema"
+                className="w-full border-b-2 border-slate-300 bg-transparent pb-4 text-4xl font-bold tracking-tight text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-indigo-500"
+              />
 
-          <input
-            value={title}
-            onChange={(event) =>
-              setTitle(
-                event.target.value
-              )
-            }
-            placeholder="Título del esquema"
-            className="w-full border-b-2 border-slate-300 bg-transparent pb-4 text-4xl font-bold tracking-tight text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-indigo-500"
-          />
+              <p className="mt-3 text-sm text-slate-500">
+                Organiza el contenido por niveles y desarrolla cada concepto.
+              </p>
+            </div>
 
-          <p className="mt-3 text-sm text-slate-500">
-            Organiza el contenido por niveles y desarrolla cada concepto.
-          </p>
+            <div className="space-y-3">
+              <input
+                value={author}
+                onChange={(event) => setAuthor(event.target.value)}
+                placeholder="Nombre"
+                aria-label="Nombre"
+                className="w-full border-b border-slate-300 bg-transparent px-1 pb-2 text-right text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-500"
+              />
 
+              <input
+                value={subject}
+                onChange={(event) => setSubject(event.target.value)}
+                placeholder="Materia"
+                aria-label="Materia"
+                className="w-full border-b border-slate-300 bg-transparent px-1 pb-2 text-right text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-500"
+              />
+            </div>
+          </div>
         </div>
 
 
@@ -2040,6 +2076,19 @@ export default function Home() {
 
 
                                       {block.type ===
+                                        "pageBreak" && (
+
+                                        <div className="my-4 flex items-center gap-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                                          <div className="h-px flex-1 bg-slate-300" />
+                                          <span className="whitespace-nowrap rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5">
+                                            Salto de página
+                                          </span>
+                                          <div className="h-px flex-1 bg-slate-300" />
+                                        </div>
+
+                                      )}
+
+                                      {block.type ===
                                         "image" && (
 
                                         <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -2187,6 +2236,18 @@ export default function Home() {
                                   🖼️ Imagen
                                 </button>
 
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    addPageBreakBlock(
+                                      concept.id
+                                    )
+                                  }
+                                  className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                                  title="Añadir un salto de página"
+                                >
+                                  ↵ Salto de página
+                                </button>
 
                                 <button
                                   type="button"
