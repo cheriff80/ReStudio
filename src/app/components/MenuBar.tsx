@@ -187,7 +187,7 @@ export default function MenuBar(props: MenuBarProps) {
             onClick={() => run(props.onEditMode)}
           />
           <MenuItem
-            label="👁️ Vista previa"
+            label="👁️ Modo Estudio"
             onClick={() => run(props.onPreview)}
           />
           <MenuSeparator />

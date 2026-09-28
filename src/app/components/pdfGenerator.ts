@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import { getImage } from "./imageStorage";
+import { paginateDocument, type PaginationPage } from "./documentPagination";
 
 type TextBlock = {
   id: number;
@@ -40,6 +41,8 @@ type TextStyle = {
 const DEFAULT_COLOR: [number, number, number] = [45, 55, 72];
 const MARGIN = 18;
 const BOTTOM = 18;
+const IMAGE_TOP_MARGIN = 1.0;
+const IMAGE_BOTTOM_MARGIN = 5.3;
 
 function colorOf(value: string): [number, number, number] {
   const v = value.trim().toLowerCase();
@@ -79,7 +82,7 @@ function styleFor(el: HTMLElement, parent: TextStyle): TextStyle {
   if (tag === "u") s.underline = true;
 
   const inline = el.getAttribute("style") || "";
-  const color = inline.match(/(?:^|;)\\s*color\\s*:\\s*([^;]+)/i);
+  const color = inline.match(/(?:^|;)\s*color\s*:\s*([^;]+)/i);
   if (color) s.color = colorOf(color[1]);
 
   return s;
@@ -98,7 +101,12 @@ function htmlToParagraphs(html: string): Run[][] {
   if (typeof document === "undefined") {
     return [[{
       text: html.replace(/<[^>]*>/g, ""),
-      style: { bold: false, italic: false, underline: false, color: DEFAULT_COLOR },
+      style: {
+        bold: false,
+        italic: false,
+        underline: false,
+        color: DEFAULT_COLOR,
+      },
     }]];
   }
 
@@ -108,17 +116,36 @@ function htmlToParagraphs(html: string): Run[][] {
   const result: Run[][] = [];
   let current: Run[] = [];
 
-  const finish = () => {
+  const finish = (forceEmpty = false) => {
     if (current.length) {
       result.push(current);
       current = [];
+    } else if (forceEmpty) {
+      result.push([]);
     }
   };
 
-  const walk = (node: Node, parentStyle: TextStyle) => {
+  const walk = (
+    node: Node,
+    parentStyle: TextStyle,
+    insideListItem = false
+  ) => {
     if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent || "";
-      if (text) current.push({ text, style: { ...parentStyle } });
+      let text = node.textContent || "";
+
+      // Los saltos de línea que pueda contener el texto fuente se
+      // consideran espacios. Los saltos reales se representan mediante
+      // <p>, <div> o <br>.
+      text = text.replace(/\s+/g, " ");
+
+      if (text) {
+        // No añadimos espacios de indentación que solo procedan del HTML.
+        if (!current.length && !text.trim()) return;
+        current.push({
+          text,
+          style: { ...parentStyle },
+        });
+      }
       return;
     }
 
@@ -129,7 +156,9 @@ function htmlToParagraphs(html: string): Run[][] {
     const style = styleFor(el, parentStyle);
 
     if (tag === "br") {
-      finish();
+      // Un <br> representa una nueva línea real, incluso aunque no haya
+      // contenido antes de él.
+      finish(true);
       return;
     }
 
@@ -155,12 +184,20 @@ function htmlToParagraphs(html: string): Run[][] {
       });
     }
 
+    const childInsideListItem = insideListItem || tag === "li";
+
     for (const child of Array.from(el.childNodes)) {
-      walk(child, style);
+      walk(child, style, childInsideListItem);
     }
 
-    if (["p", "div", "h1", "h2", "h3", "h4", "blockquote", "li"].includes(tag)) {
-      finish();
+    // Estos elementos representan bloques independientes en Tiptap.
+    // Dentro de un <li> no cerramos el párrafo al encontrar un <p>
+    // anidado, para mantener viñeta y contenido en la misma línea.
+    if (
+      ["p", "div", "h1", "h2", "h3", "h4", "blockquote", "li"].includes(tag) &&
+      !insideListItem
+    ) {
+      finish(true);
     }
   };
 
@@ -174,6 +211,14 @@ function htmlToParagraphs(html: string): Run[][] {
   }
 
   finish();
+
+  while (
+    result.length > 0 &&
+    result[result.length - 1].length === 0
+  ) {
+    result.pop();
+  }
+
   return result;
 }
 
@@ -187,48 +232,164 @@ function drawRichText(
   startNewPage: () => number
 ): number {
   const paragraphs = htmlToParagraphs(html);
+  const lineHeight = 5.2;
 
-  for (const paragraph of paragraphs) {
-    if (paragraph.length === 1 && paragraph[0].text === "__RESTUDIO_PAGE_BREAK__") {
-      y = startNewPage();
-      continue;
-    }
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(10);
+  const spaceWidth = pdf.getTextWidth(" ");
 
-    let cursor = x;
+  type Word = { text: string; style: TextStyle; width: number };
+
+  const makeWords = (paragraph: Run[]): Word[] => {
+    const words: Word[] = [];
 
     for (const run of paragraph) {
-      for (const token of run.text.split(/(\\s+)/)) {
+      for (const token of run.text.trim().split(/\s+/)) {
         if (!token) continue;
 
         pdf.setFont("helvetica", fontStyle(run.style));
         pdf.setFontSize(10);
 
-        const tokenWidth = pdf.getTextWidth(token);
-
-        if (cursor !== x && cursor + tokenWidth > x + width) {
-          y += 5.2;
-          cursor = x;
-        }
-
-        if (y > pageHeight - BOTTOM) {
-          y = startNewPage();
-          cursor = x;
-        }
-
-        pdf.setTextColor(...run.style.color);
-        pdf.text(token, cursor, y);
-
-        if (run.style.underline) {
-          pdf.setDrawColor(...run.style.color);
-          pdf.setLineWidth(0.2);
-          pdf.line(cursor, y + 0.8, cursor + tokenWidth, y + 0.8);
-        }
-
-        cursor += tokenWidth;
+        words.push({
+          text: token,
+          style: run.style,
+          width: pdf.getTextWidth(token),
+        });
       }
     }
 
-    y += 5.2;
+    return words;
+  };
+
+  const drawLine = (
+    words: Word[],
+    lineX: number,
+    lineWidth: number,
+    justify: boolean
+  ) => {
+    if (!words.length) return;
+
+    const totalWordsWidth = words.reduce(
+      (sum, word) => sum + word.width,
+      0
+    );
+    const gaps = Math.max(0, words.length - 1);
+
+    const gap =
+      justify && gaps > 0
+        ? Math.max(spaceWidth, (lineWidth - totalWordsWidth) / gaps)
+        : spaceWidth;
+
+    let cursor = lineX;
+
+    for (const word of words) {
+      pdf.setFont("helvetica", fontStyle(word.style));
+      pdf.setFontSize(10);
+      pdf.setTextColor(...word.style.color);
+      pdf.text(word.text, cursor, y);
+
+      if (word.style.underline) {
+        pdf.setDrawColor(...word.style.color);
+        pdf.setLineWidth(0.2);
+        pdf.line(
+          cursor,
+          y + 0.8,
+          cursor + word.width,
+          y + 0.8
+        );
+      }
+
+      cursor += word.width + gap;
+    }
+  };
+
+  for (const paragraph of paragraphs) {
+    if (
+      paragraph.length === 1 &&
+      paragraph[0].text === "__RESTUDIO_PAGE_BREAK__"
+    ) {
+      y = startNewPage();
+      continue;
+    }
+
+    const words = makeWords(paragraph);
+
+    if (!words.length) {
+      y += lineHeight;
+      continue;
+    }
+
+    const isList =
+      words[0].text === "•" ||
+      /^\d+\.$/.test(words[0].text);
+
+    let subsequentX = x;
+
+    if (isList) {
+      pdf.setFont("helvetica", fontStyle(words[0].style));
+      pdf.setFontSize(10);
+
+      // Sangría francesa: las líneas posteriores empiezan
+      // exactamente donde comienza el texto tras la viñeta/número.
+      subsequentX = x + words[0].width + 3;
+    }
+
+    const lines: Word[][] = [];
+    let currentLine: Word[] = [];
+    let currentWidth = 0;
+
+    for (const word of words) {
+      const lineX =
+        lines.length === 0 ? x : subsequentX;
+      const availableWidth = width - (lineX - x);
+
+      const proposedWidth =
+        currentWidth +
+        (currentLine.length > 0 ? spaceWidth : 0) +
+        word.width;
+
+      if (
+        currentLine.length > 0 &&
+        proposedWidth > availableWidth
+      ) {
+        lines.push(currentLine);
+        currentLine = [];
+        currentWidth = 0;
+      }
+
+      currentLine.push(word);
+      currentWidth +=
+        word.width +
+        (currentLine.length > 1 ? spaceWidth : 0);
+    }
+
+    if (currentLine.length) {
+      lines.push(currentLine);
+    }
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      const line = lines[lineIndex];
+      const lineX =
+        isList && lineIndex > 0
+          ? subsequentX
+          : x;
+
+      const availableWidth = width - (lineX - x);
+
+      if (y > pageHeight - BOTTOM) {
+        y = startNewPage();
+      }
+
+      // Se justifican todas las líneas salvo la última del párrafo.
+      const justify =
+        lineIndex < lines.length - 1 &&
+        line.length > 1;
+
+      drawLine(line, lineX, availableWidth, justify);
+      y += lineHeight;
+    }
+
+    y += 1.5;
   }
 
   return y;
@@ -287,9 +448,20 @@ async function drawImage(
     height = maxHeight;
   }
 
-  if (y + height > pdf.internal.pageSize.getHeight() - BOTTOM) {
+  const pageHeight = pdf.internal.pageSize.getHeight();
+
+  // En jsPDF el texto se dibuja desde la línea base. Por eso un margen
+  // numéricamente igual arriba y abajo no produce la misma distancia visual.
+  // Estos valores compensan esa diferencia para que el hueco visible resulte
+  // equivalente.
+  if (
+    y + IMAGE_TOP_MARGIN + height >
+    pageHeight - BOTTOM
+  ) {
     y = startNewPage();
   }
+
+  y += IMAGE_TOP_MARGIN;
 
   const realWidth = height / ratio;
   const imageX = x + (availableWidth - realWidth) / 2;
@@ -303,7 +475,7 @@ async function drawImage(
     height
   );
 
-  return y + height + 8;
+  return y + height + IMAGE_BOTTOM_MARGIN;
 }
 
 function numberOf(concepts: Concept[], index: number): string {
@@ -323,7 +495,7 @@ function safeName(name: string): string {
     name
       .trim()
       .replace(/[<>:"/\\\\|?*]/g, "-")
-      .replace(/\\s+/g, "-")
+      .replace(/\s+/g, "-")
       .slice(0, 100) || "mis-apuntes"
   );
 }
@@ -418,185 +590,14 @@ export async function generatePDF(
 
   /*
    * IMPORTANTE:
-   * La Vista previa y el PDF deben usar la misma planificación.
-   * Aquí reproducimos exactamente la lógica de documentPagination.ts
-   * mediante una copia local de sus constantes/estimaciones, para que
-   * la distribución de conceptos y bloques sea la misma.
+   * Modo Estudio y PDF utilizan EXACTAMENTE el mismo plan.
    */
-  const PAGE_HEIGHT_PX = 1030;
-  const TITLE_HEIGHT_PX = 95;
-  const BLOCK_SPACING_PX = 22;
-  const CONCEPT_SPACING_PX = 34;
-
-  function stripHtmlForPagination(html: string): string {
-    if (typeof document === "undefined") {
-      return html.replace(/<[^>]*>/g, " ");
-    }
-    const el = document.createElement("div");
-    el.innerHTML = html;
-    return el.textContent || "";
-  }
-
-  function estimateTextHeightForPagination(html: string): number {
-    const text = stripHtmlForPagination(html).trim();
-    if (!text) return 0;
-
-    const paragraphs = Math.max(
-      1,
-      (html.match(/<p\b/gi) || []).length
-    );
-    const lines = Math.max(
-      1,
-      Math.ceil(text.length / 78)
-    );
-
-    return Math.max(
-      70,
-      lines * 24 + (paragraphs - 1) * 12
-    );
-  }
-
-  function estimateBlockHeightForPagination(
-    block: ContentBlock
-  ): number {
-    if (block.type === "pageBreak") return 0;
-
-    if (block.type === "image") {
-      const width = Math.max(
-        25,
-        Math.min(100, block.width ?? 75)
-      );
-      return (
-        280 * (width / 75) +
-        BLOCK_SPACING_PX
-      );
-    }
-
-    return (
-      estimateTextHeightForPagination(block.content) +
-      BLOCK_SPACING_PX
-    );
-  }
-
-  type PDFFragment = {
-    concept: Concept;
-    content: ContentBlock[];
-    showTitle: boolean;
-  };
-
-  const pages: PDFFragment[][] = [];
-  let currentPage: PDFFragment[] = [];
-  let height = 0;
-
-  const newPagePlan = () => {
-    if (currentPage.length) {
-      pages.push(currentPage);
-    }
-    currentPage = [];
-    height = 0;
-  };
-
-  const pushFragment = (
-    concept: Concept,
-    content: ContentBlock[],
-    showTitle: boolean
-  ) => {
-    if (!content.length) return;
-
-    currentPage.push({
-      concept,
-      content,
-      showTitle,
-    });
-
-    height +=
-      (showTitle ? TITLE_HEIGHT_PX : 0) +
-      content.reduce(
-        (sum, block) =>
-          sum +
-          estimateBlockHeightForPagination(block),
-        0
-      ) +
-      CONCEPT_SPACING_PX;
-  };
-
-  // MISMA PLANIFICACIÓN QUE LA VISTA PREVIA.
-  for (const concept of concepts) {
-    let fragment: ContentBlock[] = [];
-    let showTitle = true;
-    let fragmentHeight = TITLE_HEIGHT_PX;
-    let hasRenderedContent = false;
-
-    const flushFragment = () => {
-      if (!fragment.length) return;
-
-      pushFragment(
-        concept,
-        fragment,
-        showTitle
-      );
-
-      fragment = [];
-      fragmentHeight = 0;
-      showTitle = false;
-    };
-
-    for (const block of concept.content) {
-      if (block.type === "pageBreak") {
-        if (
-          !hasRenderedContent &&
-          fragment.length === 0
-        ) {
-          continue;
-        }
-
-        flushFragment();
-        newPagePlan();
-
-        showTitle = false;
-        fragmentHeight = 0;
-        continue;
-      }
-
-      const blockHeight =
-        estimateBlockHeightForPagination(block);
-
-      if (
-        fragment.length > 0 &&
-        fragmentHeight + blockHeight >
-          PAGE_HEIGHT_PX
-      ) {
-        flushFragment();
-        newPagePlan();
-        showTitle = false;
-        fragmentHeight = 0;
-      }
-
-      fragment.push(block);
-      fragmentHeight += blockHeight;
-      hasRenderedContent = true;
-
-      if (
-        fragment.length === 1 &&
-        fragmentHeight > PAGE_HEIGHT_PX
-      ) {
-        flushFragment();
-        newPagePlan();
-        showTitle = false;
-        fragmentHeight = 0;
-      }
-    }
-
-    flushFragment();
-  }
-
-  newPagePlan();
-
-  if (!pages.length) {
-    pages.push([]);
-  }
+  const pages: PaginationPage[] =
+    paginateDocument(concepts);
 
   // Renderizar exactamente las páginas planificadas.
+  let unexpectedPhysicalPageBreak = false;
+
   for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
     if (pageIndex > 0) {
       pdf.addPage();
@@ -606,17 +607,16 @@ export async function generatePDF(
 
     const startNewPage = () => {
       /*
-       * La paginación ya está decidida por el plan de Vista previa.
-       * Si un bloque concreto necesita más espacio del estimado,
-       * permitimos un salto físico de emergencia, pero nunca por
-       * un pageBreak que ya haya sido tratado por el plan.
+       * El plan ya ha decidido la página.
+       * Este callback solo existe como protección contra un desajuste
+       * de medidas de renderizado. Se registra para no ocultarlo.
        */
+      unexpectedPhysicalPageBreak = true;
       pdf.addPage();
       return drawPageHeader(false);
     };
 
-    for (const fragment of pages[pageIndex]) {
-      const concept = fragment.concept;
+    for (const concept of pages[pageIndex].concepts) {
       const indent = Math.min(
         concept.level * 7,
         45
@@ -628,7 +628,7 @@ export async function generatePDF(
         9
       );
 
-      if (fragment.showTitle) {
+      if (concept.showTitle) {
         pdf.setFont(
           "helvetica",
           "bold"
@@ -657,9 +657,12 @@ export async function generatePDF(
         y += 4;
       }
 
-      for (const block of fragment.content) {
-        // Los pageBreaks no se renderizan : ils ont déjà déterminé
-        // la página durante la planificación.
+      for (let blockIndex = 0; blockIndex < concept.content.length; blockIndex++) {
+        const block = concept.content[blockIndex];
+        const nextBlock = concept.content[blockIndex + 1];
+
+        // Los pageBreaks no se renderizan: ya han determinado la página
+        // durante la planificación.
         if (block.type === "pageBreak") {
           continue;
         }
@@ -676,7 +679,12 @@ export async function generatePDF(
             pageHeight,
             startNewPage
           );
-          y += 3;
+
+          // No añadimos el espaciado genérico cuando la siguiente pieza
+          // es una imagen: la imagen aporta por sí sola su margen superior.
+          if (nextBlock?.type !== "image") {
+            y += 3;
+          }
         }
 
         if (block.type === "image") {
@@ -707,12 +715,30 @@ export async function generatePDF(
         }
       }
 
-      y += 2;
+      const lastBlock =
+        concept.content[concept.content.length - 1];
+
+      if (lastBlock?.type !== "image") {
+        y += 2;
+      }
     }
   }
 
   const totalPages =
     pdf.getNumberOfPages();
+
+  /*
+   * Invariante de ReStudio:
+   * el número físico de páginas debe ser exactamente el del plan común.
+   */
+  if (
+    unexpectedPhysicalPageBreak ||
+    totalPages !== pages.length
+  ) {
+    throw new Error(
+      `La maquetación PDF no coincide con Modo Estudio. Plan=${pages.length}, PDF=${totalPages}.`
+    );
+  }
 
   for (
     let page = 1;

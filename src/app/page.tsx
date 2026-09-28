@@ -124,12 +124,14 @@ export default function Home() {
   const [previewPages, setPreviewPages] =
     useState<PaginationPage[]>([]);
 
-  const fileInputRefs = useRef<
-    Record<
-      number,
-      HTMLInputElement | null
-    >
-  >({});
+  const imageInputRef =
+    useRef<HTMLInputElement>(null);
+
+  const imageInsertTarget =
+    useRef<{
+      conceptId: number;
+      afterBlockId?: number;
+    } | null>(null);
 
   const saveTimeout =
     useRef<ReturnType<
@@ -808,21 +810,36 @@ export default function Home() {
   // AÑADIR SALTO DE PÁGINA
   // ---------------------------------------------
 
-  function addPageBreakBlock(conceptId: number) {
+  function addPageBreakBlock(
+    conceptId: number,
+    afterBlockId?: number
+  ) {
     setConcepts((current) =>
       current.map((concept) => {
         if (concept.id !== conceptId) return concept;
 
-        return {
-          ...concept,
-          content: [
-            ...concept.content,
-            {
-              id: Date.now() + Math.random(),
-              type: "pageBreak",
-            },
-          ],
+        const pageBreak: PageBreakBlock = {
+          id: Date.now() + Math.random(),
+          type: "pageBreak",
         };
+
+        if (afterBlockId === undefined) {
+          return {
+            ...concept,
+            content: [...concept.content, pageBreak],
+          };
+        }
+
+        const blockIndex = concept.content.findIndex(
+          (block) => block.id === afterBlockId
+        );
+
+        if (blockIndex < 0) return concept;
+
+        const content = [...concept.content];
+        content.splice(blockIndex + 1, 0, pageBreak);
+
+        return { ...concept, content };
       })
     );
   }
@@ -832,86 +849,76 @@ export default function Home() {
   // ---------------------------------------------
 
   async function addImageBlock(
-    event: React.ChangeEvent<HTMLInputElement>,
-    conceptId: number
+    event: React.ChangeEvent<HTMLInputElement>
   ) {
-    const files =
-      event.target.files;
+    // Copiamos el FileList ANTES de limpiar el input.
+    // Limpiar primero puede vaciar event.target.files.
+    const files = Array.from(event.target.files ?? []);
+    const target = imageInsertTarget.current;
 
     if (
-      !files ||
-      files.length === 0
+      files.length === 0 ||
+      !target
     ) {
+      imageInsertTarget.current = null;
+      event.target.value = "";
       return;
     }
 
     try {
-      const newBlocks:
-        ImageBlock[] = [];
+      const newBlocks: ImageBlock[] = [];
 
-      for (
-        const file of Array.from(
-          files
-        )
-      ) {
-        if (
-          !file.type.startsWith(
-            "image/"
-          )
-        ) {
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) {
           continue;
         }
 
-        const imageId =
-          await saveImage(file);
-
-        const url =
-          await getImage(
-            imageId
-          );
+        const imageId = await saveImage(file);
+        const url = await getImage(imageId);
 
         newBlocks.push({
-          id:
-            Date.now() +
-            Math.random(),
-
+          id: Date.now() + Math.random(),
           type: "image",
-
           name: file.name,
-
           imageId,
-
           width: 75,
-
-          url:
-            url ??
-            undefined,
+          url: url ?? undefined,
         });
       }
 
-      if (
-        newBlocks.length ===
-        0
-      ) {
+      if (newBlocks.length === 0) {
         return;
       }
 
-      setConcepts(
-        (current) =>
-          current.map(
-            (concept) =>
-              concept.id ===
-              conceptId
-                ? {
-                    ...concept,
+      setConcepts((current) =>
+        current.map((concept) => {
+          if (concept.id !== target.conceptId) {
+            return concept;
+          }
 
-                    content: [
-                      ...concept.content,
-                      ...newBlocks,
-                    ],
-                  }
-                : concept
-          )
+          const content = [...concept.content];
+
+          if (target.afterBlockId === undefined) {
+            content.push(...newBlocks);
+            return { ...concept, content };
+          }
+
+          const blockIndex = content.findIndex(
+            (block) => block.id === target.afterBlockId
+          );
+
+          if (blockIndex < 0) {
+            content.push(...newBlocks);
+          } else {
+            content.splice(
+              blockIndex + 1,
+              0,
+              ...newBlocks
+            );
+          }
+
+          return { ...concept, content };
+        })
       );
     } catch (error) {
       console.error(
@@ -919,6 +926,8 @@ export default function Home() {
         error
       );
     } finally {
+      imageInsertTarget.current = null;
+      // Permite volver a seleccionar el mismo archivo posteriormente.
       event.target.value = "";
     }
   }
@@ -1031,11 +1040,19 @@ export default function Home() {
   // ---------------------------------------------
 
   function openImageSelector(
-    conceptId: number
+    conceptId: number,
+    afterBlockId?: number
   ) {
-    fileInputRefs.current[
-      conceptId
-    ]?.click();
+    imageInsertTarget.current = {
+      conceptId,
+      afterBlockId,
+    };
+
+    // Resetear antes de abrirlo permite seleccionar de nuevo el mismo archivo.
+    if (imageInputRef.current) {
+      imageInputRef.current.value = "";
+      imageInputRef.current.click();
+    }
   }
 
   // ---------------------------------------------
@@ -1539,7 +1556,7 @@ export default function Home() {
   }
 
   // ---------------------------------------------
-  // PAGINACIÓN DE LA VISTA PREVIA
+  // PAGINACIÓN DE LA MODO ESTUDIO
   // ---------------------------------------------
 
   useEffect(() => {
@@ -1548,7 +1565,7 @@ export default function Home() {
   }, [isPreview, concepts]);
 
   // ---------------------------------------------
-  // PAGINACIÓN DE LA VISTA PREVIA
+  // PAGINACIÓN DE LA MODO ESTUDIO
   // ---------------------------------------------
 
   // ---------------------------------------------
@@ -1576,7 +1593,7 @@ export default function Home() {
   }
 
   // ---------------------------------------------
-  // VISTA PREVIA
+  // MODO ESTUDIO
   // ---------------------------------------------
 
   if (isPreview) {
@@ -1647,6 +1664,16 @@ export default function Home() {
                     </div>
                   </header>
 
+                  {pageIndex > 0 && (
+                    <div className="mb-5 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      <div className="h-px flex-1 bg-slate-200" />
+                      <span className="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1">
+                        Salto de página
+                      </span>
+                      <div className="h-px flex-1 bg-slate-200" />
+                    </div>
+                  )}
+
                   <div className="space-y-7">
                     {previewPage.concepts.map((concept) => {
                       const originalIndex = concepts.findIndex(
@@ -1705,7 +1732,11 @@ export default function Home() {
                                 return (
                                   <figure
                                     key={block.id}
-                                    className="my-5 flex justify-center"
+                                    className="restudio-preview-image flex justify-center"
+                                    style={{
+                                      marginTop: "20px",
+                                      marginBottom: "20px",
+                                    }}
                                   >
                                     {block.url ? (
                                       <img
@@ -1743,12 +1774,12 @@ export default function Home() {
             ))}
           </div>
 
-          {/* INFORMACIÓN DE LA VISTA PREVIA */}
+          {/* INFORMACIÓN DE LA MODO ESTUDIO */}
 
           <div className="mx-auto mt-5 flex max-w-[210mm] items-center justify-between rounded-lg bg-white/80 px-4 py-3 text-sm text-slate-500 shadow-sm">
 
             <span>
-              Vista previa en formato A4
+              Modo estudio · Formato A4
             </span>
 
             <span>
@@ -1766,8 +1797,20 @@ export default function Home() {
         {/* ESTILOS DEL TEXTO ENRIQUECIDO */}
 
         <style jsx global>{`
+          .restudio-preview-image {
+            margin-top: 20px !important;
+            margin-bottom: 20px !important;
+          }
+
+
+          .restudio-preview-text {
+            text-align: justify;
+            text-justify: inter-word;
+          }
+
           .restudio-preview-text p {
             margin: 0 0 0.7rem 0;
+            text-align: justify;
           }
 
           .restudio-preview-text p:last-child {
@@ -1790,16 +1833,20 @@ export default function Home() {
             margin: 0.6rem 0;
             padding-left: 1.5rem;
             list-style-type: disc;
+            text-align: justify;
           }
 
           .restudio-preview-text ol {
             margin: 0.6rem 0;
             padding-left: 1.5rem;
             list-style-type: decimal;
+            text-align: justify;
           }
 
           .restudio-preview-text li {
             margin-bottom: 0.25rem;
+            padding-left: 0.15rem;
+            text-align: justify;
           }
 
           .restudio-preview-text h1,
@@ -1892,6 +1939,15 @@ export default function Home() {
           </div>
         </div>
 
+
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={addImageBlock}
+        />
 
         <DragDropProvider
           onDragEnd={(event) => {
@@ -2151,6 +2207,36 @@ export default function Home() {
 
                                       )}
 
+                                      {block.type !== "pageBreak" && (
+                                        <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-2">
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              openImageSelector(
+                                                concept.id,
+                                                block.id
+                                              )
+                                            }
+                                            className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-500 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                                          >
+                                            🖼️ Imagen aquí
+                                          </button>
+
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              addPageBreakBlock(
+                                                concept.id,
+                                                block.id
+                                              )
+                                            }
+                                            className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-500 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                                          >
+                                            ↵ Salto de página aquí
+                                          </button>
+                                        </div>
+                                      )}
+
                                     </SortableBlock>
 
                                   )
@@ -2159,28 +2245,7 @@ export default function Home() {
                               </div>
 
 
-                              <input
-                                ref={(
-                                  element
-                                ) => {
-                                  fileInputRefs.current[
-                                    concept.id
-                                  ] =
-                                    element;
-                                }}
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                className="hidden"
-                                onChange={(
-                                  event
-                                ) =>
-                                  addImageBlock(
-                                    event,
-                                    concept.id
-                                  )
-                                }
-                              />
+
 
 
                               <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
@@ -2244,9 +2309,8 @@ export default function Home() {
                                     )
                                   }
                                   className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
-                                  title="Añadir un salto de página"
                                 >
-                                  ↵ Salto de página
+                                  ↵ Salto de página al final
                                 </button>
 
                                 <button
