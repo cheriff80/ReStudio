@@ -28,6 +28,7 @@ type Concept = {
   id: number;
   title: string;
   level: number;
+  showNumber?: boolean;
   content: ContentBlock[];
 };
 
@@ -478,18 +479,6 @@ async function drawImage(
   return y + height + IMAGE_BOTTOM_MARGIN;
 }
 
-function numberOf(concepts: Concept[], index: number): string {
-  const counters: number[] = [];
-
-  for (let i = 0; i <= index; i++) {
-    const level = concepts[i].level;
-    counters[level] = (counters[level] || 0) + 1;
-    counters.splice(level + 1);
-  }
-
-  return counters.join(".");
-}
-
 function safeName(name: string): string {
   return (
     name
@@ -544,6 +533,8 @@ export async function generatePDF(
   function drawPageHeader(showTitle: boolean): number {
     const headerY = MARGIN;
 
+    let titleLineCount = 0;
+
     if (showTitle) {
       pdf.setFont("helvetica", "bold");
       pdf.setFontSize(22);
@@ -553,6 +544,8 @@ export async function generatePDF(
         title || "Mis apuntes",
         contentWidth * 0.68
       );
+
+      titleLineCount = Math.max(1, titleLines.length);
 
       titleLines.forEach((line: string, index: number) => {
         pdf.text(line, MARGIN, headerY + index * 9);
@@ -578,8 +571,12 @@ export async function generatePDF(
       }
     }
 
-    // La separación título -> línea se mantiene.
-    const lineY = MARGIN + (showTitle ? 7 : 5);
+    // La línea se coloca DESPUÉS de todas las líneas del título.
+    // jsPDF dibuja el texto desde la línea base; por eso una posición
+    // fija como MARGIN + 7 podía atravesar la segunda línea del título.
+    const lineY = showTitle
+      ? headerY + titleLineCount * 9 + 3
+      : MARGIN + 5;
     pdf.setDrawColor(203, 213, 225);
     pdf.setLineWidth(0.25);
     pdf.line(MARGIN, lineY, pageWidth - MARGIN, lineY);
@@ -641,10 +638,7 @@ export async function generatePDF(
         );
 
         const heading =
-          `${numberOf(
-            concepts,
-            concepts.indexOf(concept)
-          )} ${concept.title || "Sin título"}`;
+          `${concept.showNumber !== false && concept.number ? `${concept.number} ` : ""}${concept.title || "Sin título"}`;
 
         for (const line of pdf.splitTextToSize(
           heading,

@@ -9,7 +9,7 @@ import {
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable } from "@dnd-kit/react/sortable";
 
-import RichTextEditor from "./components/RichTextEditor";
+import RichTextEditor, { undoActiveEditor, redoActiveEditor } from "./components/RichTextEditor";
 import SortableBlock from "./components/SortableBlock";
 
 import {
@@ -19,7 +19,11 @@ import {
 } from "./components/imageStorage";
 
 import { generatePDF } from "./components/pdfGenerator";
-import { paginateDocument, type PaginationPage } from "./components/documentPagination";
+import {
+  getConceptNumber,
+  paginateDocument,
+  type PaginationPage,
+} from "./components/documentPagination";
 import MenuBar from "./components/MenuBar";
 
 type TextBlock = {
@@ -60,6 +64,7 @@ type Concept = {
   id: number;
   title: string;
   level: number;
+  showNumber?: boolean;
   content: ContentBlock[];
 };
 
@@ -144,6 +149,17 @@ export default function Home() {
 
   const rtdFileInputRef =
     useRef<HTMLInputElement>(null);
+
+  type RTDFileHandle = {
+    getFile: () => Promise<File>;
+    createWritable: () => Promise<{
+      write: (data: string) => Promise<void>;
+      close: () => Promise<void>;
+    }>;
+  };
+
+  const currentRTDFileHandle =
+    useRef<RTDFileHandle | null>(null);
 
   useEffect(() => {
     async function loadDocument() {
@@ -245,6 +261,7 @@ export default function Home() {
 
                 return {
                   ...concept,
+                  showNumber: concept.showNumber !== false,
                   content:
                     loadedContent,
                 };
@@ -299,7 +316,6 @@ export default function Home() {
               title,
               author,
               subject,
-
               concepts:
                 concepts.map(
                   (concept) => ({
@@ -738,32 +754,10 @@ export default function Home() {
   function getNumber(
     index: number
   ) {
-    const counters: number[] =
-      [];
-
-    for (
-      let i = 0;
-      i <= index;
-      i++
-    ) {
-      const level =
-        concepts[i].level;
-
-      if (
-        counters[level] ===
-        undefined
-      ) {
-        counters[level] = 1;
-      } else {
-        counters[level]++;
-      }
-
-      counters.splice(
-        level + 1
-      );
-    }
-
-    return counters.join(".");
+    return getConceptNumber(
+      concepts,
+      index
+    );
   }
 
   // ---------------------------------------------
@@ -1159,7 +1153,7 @@ export default function Home() {
   }
 
 
-  async function exportRTD() {
+  function buildRTDContent() {
     const data: RTDFile = {
       format: "rtd",
       version: 1,
@@ -1169,135 +1163,87 @@ export default function Home() {
       concepts,
     };
 
-    const content = JSON.stringify(
-      data,
-      null,
-      2
-    );
+    return JSON.stringify(data, null, 2);
+  }
 
-    const fileName =
-      `${sanitizeRTDFileName(
-        title || "mis-apuntes"
-      )}.rtd`;
+  function getRTDFileName() {
+    return `${sanitizeRTDFileName(
+      title || "mis-apuntes"
+    )}.rtd`;
+  }
 
-    /*
-     * Edge / Chrome:
-     * mostramos el diálogo nativo de "Guardar como".
-     */
-    if (
-      "showSaveFilePicker" in window
-    ) {
+  async function saveToCurrentRTDFile() {
+    const handle = currentRTDFileHandle.current;
+    if (!handle) return false;
+
+    try {
+      const writable = await handle.createWritable();
+      await writable.write(buildRTDContent());
+      await writable.close();
+      return true;
+    } catch (error) {
+      console.warn("No se pudo sobrescribir el archivo RTD:", error);
+      return false;
+    }
+  }
+
+  async function saveRTDAs() {
+    const content = buildRTDContent();
+    const fileName = getRTDFileName();
+
+    if ("showSaveFilePicker" in window) {
       try {
         const picker =
-          (
-            window as Window & {
-              showSaveFilePicker?: (
-                options?: unknown
-              ) => Promise<{
-                createWritable: () => Promise<{
-                  write: (
-                    data: string
-                  ) => Promise<void>;
-                  close: () => Promise<void>;
-                }>;
-              }>;
-            }
-          ).showSaveFilePicker;
+          (window as Window & {
+            showSaveFilePicker?: (options?: unknown) => Promise<RTDFileHandle>;
+          }).showSaveFilePicker;
 
-        if (!picker) {
-          throw new Error(
-            "File System Access API no disponible"
-          );
-        }
+        if (!picker) throw new Error("File System Access API no disponible");
 
-        const handle =
-          await picker({
-            suggestedName:
-              fileName,
-            types: [
-              {
-                description:
-                  "Documento ReStudio",
-                accept: {
-                  "application/octet-stream":
-                    [".rtd"],
-                },
-              },
-            ],
-          });
+        const handle = await picker({
+          suggestedName: fileName,
+          types: [
+            {
+              description: "Documento ReStudio",
+              accept: { "application/octet-stream": [".rtd"] },
+            },
+          ],
+        });
 
-        const writable =
-          await handle.createWritable();
-
-        await writable.write(
-          content
-        );
-
+        const writable = await handle.createWritable();
+        await writable.write(content);
         await writable.close();
 
+        currentRTDFileHandle.current = handle;
         return;
       } catch (error) {
-        if (
-          error instanceof DOMException &&
-          error.name ===
-            "AbortError"
-        ) {
+        if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
-
-        console.warn(
-          "No se pudo utilizar el diálogo nativo:",
-          error
-        );
+        console.warn("No se pudo utilizar el diálogo nativo:", error);
       }
     }
 
-    /*
-     * Firefox:
-     * utilizamos su sistema de descarga.
-     * Si está activado "Preguntar siempre dónde guardar
-     * los archivos", Firefox mostrará su ventana
-     * de selección de carpeta/nombre.
-     */
-    const blob =
-      new Blob(
-        [content],
-        {
-          type:
-            "application/octet-stream",
-        }
-      );
-
-    const url =
-      URL.createObjectURL(
-        blob
-      );
-
-    const link =
-      document.createElement(
-        "a"
-      );
-
+    const blob = new Blob([content], {
+      type: "application/octet-stream",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
     link.href = url;
-    link.download =
-      fileName;
-
-    document.body.appendChild(
-      link
-    );
-
+    link.download = fileName;
+    document.body.appendChild(link);
     link.click();
-
     link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
-    setTimeout(
-      () => {
-        URL.revokeObjectURL(
-          url
-        );
-      },
-      1000
-    );
+  async function exportRTD() {
+    if (await saveToCurrentRTDFile()) {
+      return;
+    }
+
+    // Si no existe un archivo asociado, Guardar equivale a Guardar como.
+    await saveRTDAs();
   }
 
   async function openRTD() {
@@ -1314,11 +1260,7 @@ export default function Home() {
             window as Window & {
               showOpenFilePicker?: (
                 options?: unknown
-              ) => Promise<
-                Array<{
-                  getFile: () => Promise<File>;
-                }>
-              >;
+              ) => Promise<RTDFileHandle[]>;
             }
           ).showOpenFilePicker;
 
@@ -1350,9 +1292,8 @@ export default function Home() {
             await handles[0]
               .getFile();
 
-          await loadRTDFile(
-            file
-          );
+          currentRTDFileHandle.current = handles[0];
+          await loadRTDFile(file);
         }
 
         return;
@@ -1450,6 +1391,7 @@ export default function Home() {
 
     if (!file) return;
 
+    currentRTDFileHandle.current = null;
     void loadRTDFile(file);
   }
 
@@ -1458,6 +1400,7 @@ export default function Home() {
   // ---------------------------------------------
 
   function handleNewDocument() {
+    currentRTDFileHandle.current = null;
     const hasContent =
       title.trim() !== "" ||
       author.trim() !== "" ||
@@ -1507,11 +1450,11 @@ export default function Home() {
   }
 
   function handleUndo() {
-    document.execCommand("undo");
+    undoActiveEditor();
   }
 
   function handleRedo() {
-    document.execCommand("redo");
+    redoActiveEditor();
   }
 
   function handleCut() {
@@ -1604,7 +1547,7 @@ export default function Home() {
             onNew={handleNewDocument}
             onOpen={openRTD}
             onSave={exportRTD}
-            onSaveAs={exportRTD}
+            onSaveAs={saveRTDAs}
             onExportPdf={handleGeneratePDF}
             onUndo={handleUndo}
             onRedo={handleRedo}
@@ -1676,10 +1619,6 @@ export default function Home() {
 
                   <div className="space-y-7">
                     {previewPage.concepts.map((concept) => {
-                      const originalIndex = concepts.findIndex(
-                        (item) => item.id === concept.id
-                      );
-
                       const indentation = Math.min(
                         concept.level * 12,
                         55
@@ -1702,12 +1641,11 @@ export default function Home() {
                                 )}px`,
                               }}
                             >
-                              <span className="font-bold text-indigo-600">
-                                {originalIndex >= 0
-                                  ? getNumber(originalIndex)
-                                  : ""}
-                                {" "}
-                              </span>
+                              {concept.showNumber !== false && concept.number && (
+                                <span className="font-bold text-indigo-600">
+                                  {concept.number}{" "}
+                                </span>
+                              )}
                               <span>
                                 {concept.title || "Sin título"}
                               </span>
@@ -1884,7 +1822,7 @@ export default function Home() {
           onNew={handleNewDocument}
           onOpen={openRTD}
           onSave={exportRTD}
-          onSaveAs={exportRTD}
+          onSaveAs={saveRTDAs}
           onExportPdf={handleGeneratePDF}
           onUndo={handleUndo}
           onRedo={handleRedo}
@@ -1917,6 +1855,8 @@ export default function Home() {
               <p className="mt-3 text-sm text-slate-500">
                 Organiza el contenido por niveles y desarrolla cada concepto.
               </p>
+
+              
             </div>
 
             <div className="space-y-3">
@@ -2016,14 +1956,13 @@ export default function Home() {
                     className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:shadow-md"
                   >
 
-                    <div className="flex gap-4">
+                    <div className={concept.showNumber !== false ? "flex gap-4" : "flex"}>
 
-                      <div className="min-w-[45px] pt-1.5 text-lg font-bold text-indigo-500">
-                        {getNumber(
-                          index
-                        )}
-                      </div>
-
+                      {concept.showNumber !== false && (
+                        <div className="min-w-[45px] pt-1.5 text-lg font-bold text-indigo-500">
+                          {getNumber(index)}
+                        </div>
+                      )}
 
                       <div className="min-w-0 flex-1">
 
@@ -2048,6 +1987,30 @@ export default function Home() {
                               : "▼"}
                           </button>
 
+
+                          <label
+                            className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-slate-500"
+                            title="Mostrar número de este concepto"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={concept.showNumber !== false}
+                              onChange={(event) =>
+                                setConcepts((current) =>
+                                  current.map((item) =>
+                                    item.id === concept.id
+                                      ? {
+                                          ...item,
+                                          showNumber: event.target.checked,
+                                        }
+                                      : item
+                                  )
+                                )
+                              }
+                              className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span>Numerar</span>
+                          </label>
 
                           <input
                             value={

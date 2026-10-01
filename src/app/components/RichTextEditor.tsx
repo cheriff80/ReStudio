@@ -1,10 +1,21 @@
 "use client";
 
 import { EditorContent, useEditor } from "@tiptap/react";
+import type { Editor } from "@tiptap/core";
 import { useEffect } from "react";
 import StarterKit from "@tiptap/starter-kit";
 import { Color, TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
+
+let activeEditor: Editor | null = null;
+
+export function undoActiveEditor() {
+  activeEditor?.chain().focus().undo().run();
+}
+
+export function redoActiveEditor() {
+  activeEditor?.chain().focus().redo().run();
+}
 
 type RichTextEditorProps = {
   content: string;
@@ -17,9 +28,7 @@ export default function RichTextEditor({
 }: RichTextEditorProps) {
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({
-        orderedList: false,
-      }),
+      StarterKit,
       TextStyle,
       Color.configure({ types: ["textStyle"] }),
       Underline,
@@ -28,6 +37,15 @@ export default function RichTextEditor({
     immediatelyRender: false,
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
   });
+
+  useEffect(() => {
+    if (!editor) return;
+    return () => {
+      if (activeEditor === editor) {
+        activeEditor = null;
+      }
+    };
+  }, [editor]);
 
   useEffect(() => {
     if (!editor) return;
@@ -81,14 +99,15 @@ export default function RichTextEditor({
           className={`rounded-lg px-3 py-1.5 text-sm ${editor.isActive("bulletList") ? "bg-indigo-100 text-indigo-700" : "text-slate-600 hover:bg-slate-200"}`}>
           • Lista
         </button>
-
       </div>
 
       <EditorContent
         editor={editor}
+        onFocus={() => {
+          activeEditor = editor;
+        }}
         className="rich-text-editor min-h-[90px] p-4 text-base leading-7 text-slate-700 outline-none"
       />
     </div>
   );
 }
-

@@ -29,11 +29,46 @@ export type PaginationConcept = {
   level: number;
   content: PaginationBlock[];
   showTitle?: boolean;
+  number?: string;
+  showNumber?: boolean;
 };
 
 export type PaginationPage = {
   concepts: PaginationConcept[];
 };
+
+/**
+ * Numeración jerárquica:
+ * 1, 1.1, 1.2, 2, 2.1, 2.1.1...
+ */
+export function getConceptNumber(
+  concepts: PaginationConcept[],
+  index: number
+): string {
+  const counters: number[] = [];
+
+  for (let i = 0; i <= index; i++) {
+    // Solo los conceptos marcados como "Numerar" consumen un número.
+    if (concepts[i].showNumber === false) {
+      continue;
+    }
+
+    // Si no existe todavía una rama numerada que justifique este nivel,
+    // este concepto inicia la numeración disponible desde el nivel 0.
+    const requestedLevel = Math.max(0, concepts[i].level);
+    const level = Math.min(requestedLevel, counters.length);
+
+    // Si es el primer concepto numerado de la rama, comienza en 1.
+    counters[level] =
+      (counters[level] ?? 0) + 1;
+
+    // Al bajar de nivel, se reinician los contadores de niveles inferiores.
+    counters.length = level + 1;
+  }
+
+  // Si no hay ningún concepto numerado anterior, este es el primero: 1.
+  return counters.length ? counters.join(".") : "1";
+}
 
 /*
  * ÚNICA FUENTE DE VERDAD PARA LA PAGINACIÓN.
@@ -169,7 +204,19 @@ export function paginateDocument(
     usedHeight = 0;
   };
 
-  for (const concept of concepts) {
+  for (
+    let conceptIndex = 0;
+    conceptIndex < concepts.length;
+    conceptIndex++
+  ) {
+    const concept: PaginationConcept = {
+      ...concepts[conceptIndex],
+      number: getConceptNumber(
+        concepts,
+        conceptIndex
+      ),
+    };
+
     currentConcept = concept;
     fragment = [];
     fragmentHeight = TITLE_HEIGHT;
