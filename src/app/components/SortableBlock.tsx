@@ -26,6 +26,9 @@ export default function SortableBlock({
   } = useSortable({
     id,
     index,
+    // Cada concepto es una lista independiente.
+    // Así los índices de dnd-kit coinciden con concept.content.
+    group: conceptId,
     data: {
       conceptId,
     },
@@ -43,7 +46,6 @@ export default function SortableBlock({
       }`}
     >
       {/* ASA DE ARRASTRE */}
-
       <button
         ref={handleRef}
         type="button"
@@ -54,13 +56,11 @@ export default function SortableBlock({
       </button>
 
       {/* CONTENIDO */}
-
       <div className="p-1">
         {children}
       </div>
 
       {/* ELIMINAR */}
-
       <button
         type="button"
         onClick={onDelete}

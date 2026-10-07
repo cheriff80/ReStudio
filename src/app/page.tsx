@@ -39,6 +39,7 @@ type ImageBlock = {
   imageId: string;
   url?: string;
   width?: number;
+  aspectRatio?: number;
 };
 
 type PageBreakBlock = {
@@ -51,13 +52,21 @@ type ContentBlock =
   | ImageBlock
   | PageBreakBlock;
 
+type RTDImageAsset = {
+  name: string;
+  type: string;
+  dataUrl: string;
+};
+
 type RTDFile = {
   format: "rtd";
-  version: 1;
+  version: 1 | 2;
   title: string;
   author: string;
   subject: string;
+  faculty?: string;
   concepts: Concept[];
+  images?: Record<string, RTDImageAsset>;
 };
 
 type Concept = {
@@ -72,6 +81,7 @@ type SavedDocument = {
   title: string;
   author?: string;
   subject?: string;
+  faculty?: string;
   concepts: Concept[];
 };
 
@@ -101,6 +111,9 @@ export default function Home() {
     useState("");
 
   const [subject, setSubject] =
+    useState("");
+
+  const [faculty, setFaculty] =
     useState("");
 
   const [concepts, setConcepts] =
@@ -201,6 +214,10 @@ export default function Home() {
           setSubject(parsed.subject);
         }
 
+        if (typeof (parsed as SavedDocument).faculty === "string") {
+          setFaculty((parsed as SavedDocument).faculty ?? "");
+        }
+
         if (
           !Array.isArray(
             parsed.concepts
@@ -240,12 +257,18 @@ export default function Home() {
                               block.imageId
                             );
 
+                          const loadedUrl =
+                            url ??
+                            undefined;
+                          const aspectRatio =
+                            block.aspectRatio ??
+                            (await getImageAspectRatio(loadedUrl));
+
                           return {
                             ...block,
                             width: block.width ?? 75,
-                            url:
-                              url ??
-                              undefined,
+                            aspectRatio,
+                            url: loadedUrl,
                           };
                         } catch (error) {
                           console.error(
@@ -316,6 +339,7 @@ export default function Home() {
               title,
               author,
               subject,
+              faculty,
               concepts:
                 concepts.map(
                   (concept) => ({
@@ -336,6 +360,8 @@ export default function Home() {
                                 block.imageId,
                               width:
                                 block.width ?? 75,
+                              aspectRatio:
+                                block.aspectRatio,
                             };
                           }
 
@@ -381,6 +407,7 @@ export default function Home() {
     title,
     author,
     subject,
+    faculty,
     concepts,
     isLoaded,
   ]);
@@ -403,6 +430,7 @@ export default function Home() {
         title,
         author,
         subject,
+        faculty,
         concepts
       );
     } catch (error) {
@@ -869,6 +897,7 @@ export default function Home() {
 
         const imageId = await saveImage(file);
         const url = await getImage(imageId);
+        const aspectRatio = await getImageAspectRatio(url ?? undefined);
 
         newBlocks.push({
           id: Date.now() + Math.random(),
@@ -876,6 +905,7 @@ export default function Home() {
           name: file.name,
           imageId,
           width: 75,
+          aspectRatio,
           url: url ?? undefined,
         });
       }
@@ -1049,6 +1079,23 @@ export default function Home() {
     }
   }
 
+  async function getImageAspectRatio(url?: string): Promise<number | undefined> {
+    if (!url) return undefined;
+
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+          resolve(image.naturalWidth / image.naturalHeight);
+        } else {
+          resolve(undefined);
+        }
+      };
+      image.onerror = () => resolve(undefined);
+      image.src = url;
+    });
+  }
+
   // ---------------------------------------------
   // REORDENAR BLOQUES
   // ---------------------------------------------
@@ -1153,14 +1200,94 @@ export default function Home() {
   }
 
 
-  function buildRTDContent() {
+  async function blobToDataUrl(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+        } else {
+          reject(new Error("No se pudo convertir la imagen a datos embebidos."));
+        }
+      };
+
+      reader.onerror = () => {
+        reject(reader.error ?? new Error("Error leyendo la imagen."));
+      };
+
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function imageUrlToAsset(
+    imageId: string,
+    name: string
+  ): Promise<RTDImageAsset | null> {
+    const url = await getImage(imageId);
+
+    if (!url) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+
+      return {
+        name,
+        type: blob.type || "application/octet-stream",
+        dataUrl: await blobToDataUrl(blob),
+      };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function buildRTDContent(): Promise<string> {
+    const images: Record<string, RTDImageAsset> = {};
+
+    const conceptsForRTD: Concept[] = await Promise.all(
+      concepts.map(async (concept) => ({
+        ...concept,
+        content: await Promise.all(
+          concept.content.map(async (block) => {
+            if (block.type !== "image") {
+              return block;
+            }
+
+            const asset = await imageUrlToAsset(
+              block.imageId,
+              block.name
+            );
+
+            if (asset) {
+              images[block.imageId] = asset;
+            }
+
+            // Nunca guardamos la blob URL temporal dentro del .rtd.
+            return {
+              id: block.id,
+              type: "image",
+              name: block.name,
+              imageId: block.imageId,
+              width: block.width ?? 75,
+              aspectRatio: block.aspectRatio,
+            };
+          })
+        ),
+      }))
+    );
+
     const data: RTDFile = {
       format: "rtd",
-      version: 1,
+      version: 2,
       title,
       author,
       subject,
-      concepts,
+      faculty,
+      concepts: conceptsForRTD,
+      images,
     };
 
     return JSON.stringify(data, null, 2);
@@ -1178,7 +1305,7 @@ export default function Home() {
 
     try {
       const writable = await handle.createWritable();
-      await writable.write(buildRTDContent());
+      await writable.write(await buildRTDContent());
       await writable.close();
       return true;
     } catch (error) {
@@ -1188,7 +1315,7 @@ export default function Home() {
   }
 
   async function saveRTDAs() {
-    const content = buildRTDContent();
+    const content = await buildRTDContent();
     const fileName = getRTDFileName();
 
     if ("showSaveFilePicker" in window) {
@@ -1320,6 +1447,123 @@ export default function Home() {
     rtdFileInputRef.current?.click();
   }
 
+  function dataUrlToFile(
+    dataUrl: string,
+    fileName: string,
+    mimeType: string
+  ): File {
+    const commaIndex = dataUrl.indexOf(",");
+
+    if (commaIndex < 0) {
+      throw new Error(`Imagen embebida no válida: ${fileName}`);
+    }
+
+    const header = dataUrl.slice(0, commaIndex);
+    const body = dataUrl.slice(commaIndex + 1);
+
+    const binary = atob(body);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index++) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    const detectedType =
+      mimeType ||
+      header.match(/^data:([^;]+)/)?.[1] ||
+      "application/octet-stream";
+
+    return new File(
+      [bytes],
+      fileName,
+      { type: detectedType }
+    );
+  }
+
+  async function hydrateRTDConcepts(
+    parsed: Partial<RTDFile>
+  ): Promise<Concept[]> {
+    if (!Array.isArray(parsed.concepts)) {
+      throw new Error("El archivo RTD no contiene conceptos válidos.");
+    }
+
+    const embeddedImages = parsed.images ?? {};
+    const imageIdMap = new Map<string, string>();
+
+    // Las imágenes de un .rtd v2 se copian de nuevo a IndexedDB.
+    for (const [oldImageId, asset] of Object.entries(embeddedImages)) {
+      if (
+        !asset ||
+        typeof asset.dataUrl !== "string"
+      ) {
+        continue;
+      }
+
+      try {
+        const file = dataUrlToFile(
+          asset.dataUrl,
+          asset.name || "imagen",
+          asset.type || "application/octet-stream"
+        );
+
+        const newImageId = await saveImage(file);
+        imageIdMap.set(oldImageId, newImageId);
+      } catch (error) {
+        console.error(
+          `No se pudo restaurar la imagen ${asset.name || oldImageId}:`,
+          error
+        );
+      }
+    }
+
+    return Promise.all(
+      (parsed.concepts as Concept[]).map(async (concept) => {
+        const loadedContent = await Promise.all(
+          concept.content.map(async (block) => {
+            if (block.type !== "image") {
+              return block;
+            }
+
+            const restoredImageId =
+              imageIdMap.get(block.imageId) ?? block.imageId;
+
+            try {
+              const url = await getImage(restoredImageId);
+              const loadedUrl = url ?? undefined;
+
+              return {
+                ...block,
+                imageId: restoredImageId,
+                width: block.width ?? 75,
+                aspectRatio:
+                  block.aspectRatio ??
+                  (await getImageAspectRatio(loadedUrl)),
+                url: loadedUrl,
+              };
+            } catch (error) {
+              console.error(
+                "Error restaurando imagen del RTD:",
+                error
+              );
+
+              return {
+                ...block,
+                imageId: restoredImageId,
+                width: block.width ?? 75,
+              };
+            }
+          })
+        );
+
+        return {
+          ...concept,
+          showNumber: concept.showNumber !== false,
+          content: loadedContent,
+        };
+      })
+    );
+  }
+
   async function loadRTDFile(file: File) {
     if (
       !file.name
@@ -1366,9 +1610,18 @@ export default function Home() {
           : ""
       );
 
-      setConcepts(
-        parsed.concepts as Concept[]
+      setFaculty(
+        typeof parsed.faculty === "string"
+          ? parsed.faculty
+          : ""
       );
+
+      const loadedConcepts =
+        await hydrateRTDConcepts(parsed);
+
+      setConcepts(loadedConcepts);
+      setCollapsedConcepts(new Set());
+      setIsPreview(false);
     } catch (error) {
       console.error(
         "Error abriendo RTD:",
@@ -1405,6 +1658,7 @@ export default function Home() {
       title.trim() !== "" ||
       author.trim() !== "" ||
       subject.trim() !== "" ||
+      faculty.trim() !== "" ||
       concepts.some(
         (concept) =>
           concept.title.trim() !== "" ||
@@ -1431,6 +1685,7 @@ export default function Home() {
     setTitle("");
     setAuthor("");
     setSubject("");
+    setFaculty("");
     setConcepts([
       {
         id: now,
@@ -1491,6 +1746,7 @@ export default function Home() {
   }
 
   function handleEditMode() {
+    setCollapsedConcepts(new Set());
     setIsPreview(false);
   }
 
@@ -1504,8 +1760,36 @@ export default function Home() {
 
   useEffect(() => {
     if (!isPreview) return;
-    setPreviewPages(paginateDocument(concepts));
-  }, [isPreview, concepts]);
+
+    let cancelled = false;
+
+    async function rebuildPreviewPages() {
+      try {
+        const pages = await paginateDocument(concepts, {
+          title,
+          author,
+          subject,
+          faculty,
+        });
+
+        if (!cancelled) {
+          setPreviewPages(pages);
+        }
+      } catch (error) {
+        console.error("Error calculando la paginación del Modo Estudio:", error);
+
+        if (!cancelled) {
+          setPreviewPages([]);
+        }
+      }
+    }
+
+    void rebuildPreviewPages();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isPreview, concepts, title, author, subject, faculty]);
 
   // ---------------------------------------------
   // PAGINACIÓN DE LA MODO ESTUDIO
@@ -1583,82 +1867,83 @@ export default function Home() {
                 <article
                   className="bg-white"
                   style={{
+                    position: "relative",
                     minHeight: "297mm",
-                    padding: "22mm 20mm 18mm 20mm",
+                    padding: "18mm",
                     boxSizing: "border-box",
                   }}
                 >
-                  <header className="mb-8 border-b-2 border-slate-200 pb-4">
+                  <header className="border-b border-slate-300" style={{ marginBottom: "12mm", paddingBottom: "3mm" }}>
                     <div className="flex items-start justify-between gap-6">
                       {pageIndex === 0 ? (
-                        <h1 className="text-4xl font-bold leading-tight text-slate-900">
-                          {title || "Mis apuntes"}
+                        <h1 className="font-bold text-slate-900" style={{ fontFamily: "Arial, Helvetica, sans-serif", fontSize: "22pt", lineHeight: "9mm" }}>
+                          {title}
                         </h1>
                       ) : (
                         <div />
                       )}
 
-                      {(author.trim() || subject.trim()) && (
-                        <div className="shrink-0 text-right text-xs leading-5 text-slate-500">
-                          {author.trim() && <div>{author}</div>}
+                      {(faculty.trim() || subject.trim() || author.trim()) && (
+                        <div className="shrink-0 text-right text-slate-500" style={{ fontFamily: "Arial, Helvetica, sans-serif", fontSize: "9pt", lineHeight: "4.5mm" }}>
+                          {faculty.trim() && <div>{faculty}</div>}
                           {subject.trim() && <div>{subject}</div>}
+                          {author.trim() && <div>{author}</div>}
                         </div>
                       )}
                     </div>
                   </header>
 
-                  {pageIndex > 0 && (
-                    <div className="mb-5 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      <div className="h-px flex-1 bg-slate-200" />
-                      <span className="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1">
-                        Salto de página
-                      </span>
-                      <div className="h-px flex-1 bg-slate-200" />
-                    </div>
-                  )}
-
-                  <div className="space-y-7">
+                  <div>
                     {previewPage.concepts.map((concept) => {
-                      const indentation = Math.min(
-                        concept.level * 12,
-                        55
-                      );
+                      const indentation = Math.min(concept.level * 7, 45);
 
                       return (
                         <section
                           key={`${pageIndex}-${concept.id}-${concept.content.length}`}
                           style={{
-                            marginLeft: `${indentation}px`,
+                            marginLeft: `${indentation}mm`,
+                            marginBottom: "2mm",
                           }}
                         >
                           {concept.showTitle !== false && (
                             <h2
-                              className="mb-3 font-semibold leading-tight text-slate-900"
+                              className="font-semibold text-slate-900"
                               style={{
+                                fontFamily: "Arial, Helvetica, sans-serif",
                                 fontSize: `${Math.max(
-                                  22 - concept.level * 2,
-                                  15
-                                )}px`,
+                                  14 - concept.level,
+                                  9
+                                )}pt`,
+                                lineHeight: `${Math.max(
+                                  14 - concept.level,
+                                  9
+                                ) * 0.45}mm`,
+                                margin: "0 0 2mm 0",
                               }}
                             >
                               {concept.showNumber !== false && concept.number && (
-                                <span className="font-bold text-indigo-600">
+                                <span className="font-bold">
                                   {concept.number}{" "}
                                 </span>
                               )}
-                              <span>
-                                {concept.title || "Sin título"}
-                              </span>
+                              <span>{concept.title}</span>
                             </h2>
                           )}
 
-                          <div className="space-y-5">
+                          <div>
                             {concept.content.map((block) => {
                               if (block.type === "text") {
                                 return (
                                   <div
                                     key={block.id}
-                                    className="restudio-preview-text text-[15px] leading-7 text-slate-700"
+                                    className="restudio-preview-text"
+                                    style={{
+                                      fontFamily:
+                                        "Arial, Helvetica, sans-serif",
+                                      fontSize: "10pt",
+                                      lineHeight: "5.2mm",
+                                      color: "rgb(45,55,72)",
+                                    }}
                                     dangerouslySetInnerHTML={{
                                       __html: block.content,
                                     }}
@@ -1667,13 +1952,21 @@ export default function Home() {
                               }
 
                               if (block.type === "image") {
+                                const availableWidth =
+                                  174 - Math.min(concept.level * 7, 45);
+                                const imageWidth =
+                                  availableWidth *
+                                  Math.max(
+                                    0.25,
+                                    Math.min(1, (block.width ?? 75) / 100)
+                                  );
+
                                 return (
                                   <figure
                                     key={block.id}
-                                    className="restudio-preview-image flex justify-center"
+                                    className="flex justify-center"
                                     style={{
-                                      marginTop: "20px",
-                                      marginBottom: "20px",
+                                      margin: "1mm 0 5.3mm 0",
                                     }}
                                   >
                                     {block.url ? (
@@ -1681,10 +1974,11 @@ export default function Home() {
                                         src={block.url}
                                         alt={block.name}
                                         style={{
-                                          width: `${block.width ?? 75}%`,
-                                          maxWidth: "100%",
-                                          maxHeight: "245mm",
+                                          width: `${imageWidth}mm`,
+                                          maxWidth: `${availableWidth}mm`,
+                                          maxHeight: "90mm",
                                           objectFit: "contain",
+                                          display: "block",
                                         }}
                                       />
                                     ) : (
@@ -1704,7 +1998,7 @@ export default function Home() {
                     })}
                   </div>
 
-                  <div className="mt-8 border-t border-slate-100 pt-3 text-center text-xs text-slate-400">
+                  <div className="border-t border-slate-100 pt-3 text-center text-xs text-slate-400" style={{ position: "absolute", left: "18mm", right: "18mm", bottom: "7mm" }}>
                     ReStudio · Página {pageIndex + 1} de {previewPages.length}
                   </div>
                 </article>
@@ -1861,18 +2155,26 @@ export default function Home() {
 
             <div className="space-y-3">
               <input
-                value={author}
-                onChange={(event) => setAuthor(event.target.value)}
-                placeholder="Nombre"
-                aria-label="Nombre"
+                value={faculty}
+                onChange={(event) => setFaculty(event.target.value)}
+                placeholder="Facultad"
+                aria-label="Facultad"
                 className="w-full border-b border-slate-300 bg-transparent px-1 pb-2 text-right text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-500"
               />
 
               <input
                 value={subject}
                 onChange={(event) => setSubject(event.target.value)}
-                placeholder="Materia"
-                aria-label="Materia"
+                placeholder="Asignatura"
+                aria-label="Asignatura"
+                className="w-full border-b border-slate-300 bg-transparent px-1 pb-2 text-right text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-500"
+              />
+
+              <input
+                value={author}
+                onChange={(event) => setAuthor(event.target.value)}
+                placeholder="Nombre"
+                aria-label="Nombre"
                 className="w-full border-b border-slate-300 bg-transparent px-1 pb-2 text-right text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-500"
               />
             </div>
